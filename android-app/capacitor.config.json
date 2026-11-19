@@ -1,0 +1,8 @@
+{
+  "appId": "gt.mapadecampo.app",
+  "appName": "Mapa de Campo",
+  "webDir": "www",
+  "android": {
+    "backgroundColor": "#1f5135"
+  }
+}

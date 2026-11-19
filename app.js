@@ -4,6 +4,16 @@ const $ = (s, el = document) => el.querySelector(s);
 const esc = t => String(t == null ? '' : t).replace(/[<>&"]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' }[c]));
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 if (window.pdfjsLib) pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+// Dentro de la APK (Capacitor) se usan los plugins nativos para compartir archivos.
+const NATIVE = !!(window.Capacitor && Capacitor.isNativePlatform && Capacitor.isNativePlatform());
+async function nativeShare(file) {
+  try {
+    const { Filesystem, Share } = Capacitor.Plugins;
+    const data = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result).split(',')[1]); r.onerror = rej; r.readAsDataURL(file); });
+    const w = await Filesystem.writeFile({ path: file.name, data, directory: 'CACHE' });
+    await Share.share({ title: file.name, files: [w.uri], dialogTitle: 'Enviar ' + file.name });
+  } catch (e) { if (!/cancel/i.test(String(e && e.message))) toast('No se pudo compartir: ' + (e.message || e)); }
+}
 
 // ---------- Iconos ----------
 const P = {
@@ -904,12 +914,14 @@ function exportSheet() {
     return new File([Geo.toCSV(feats)], base + '.csv', { type: 'text/csv' });
   };
   s.querySelector('#xDl').onclick = () => {
+    if (NATIVE) return nativeShare(build());
     const f = build(), a = document.createElement('a');
     a.href = URL.createObjectURL(f); a.download = f.name; document.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(a.href), 4000);
   };
   s.querySelector('#xSh').onclick = async () => {
     const f = build();
+    if (NATIVE) return nativeShare(f);
     if (navigator.canShare && navigator.canShare({ files: [f] })) {
       try { await navigator.share({ files: [f], title: f.name }); } catch (e) { if (e.name !== 'AbortError') toast('No se pudo compartir'); }
     } else { toast('Este navegador no permite compartir archivos; se descargará.'); s.querySelector('#xDl').click(); }
@@ -964,5 +976,16 @@ $('#btnBack').onclick = async () => {
 window.addEventListener('beforeunload', e => { if (track) { DB.put('features', track.f); e.preventDefault(); e.returnValue = ''; } });
 
 // ---------- Inicio ----------
-if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js').catch(() => { });
+if (!NATIVE && 'serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js').catch(() => { });
+if (NATIVE) {
+  // Botón Atrás de Android: cierra hojas, sale del modo actual o vuelve a la biblioteca.
+  const App = Capacitor.Plugins.App;
+  if (App) App.addListener('backButton', () => {
+    const v = document.querySelector('.viewer');
+    if (v) return v.remove();
+    if (sheetEl) return closeSheet();
+    if (cur) return $('#btnBack').click();
+    App.exitApp();
+  });
+}
 showLibrary();
