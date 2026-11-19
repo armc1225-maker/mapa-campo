@@ -35,7 +35,7 @@ const ic = n => `<svg class="i" viewBox="0 0 24 24" aria-hidden="true">${P[n]}</
 
 // ---------- Ajustes (preferencias por dispositivo) ----------
 const settings = (() => {
-  let s = { fmt: 'dd', labels: true };
+  let s = { fmt: 'dd', labels: true, base: 'sat', opacity: 1 };
   try { Object.assign(s, JSON.parse(localStorage.getItem('mc-settings') || '{}')); } catch (e) { }
   return new Proxy(s, { set(o, k, v) { o[k] = v; try { localStorage.setItem('mc-settings', JSON.stringify(o)); } catch (e) { } return true; } });
 })();
@@ -122,17 +122,25 @@ async function showLibrary() {
   revokeAll();
   cur = null;
   show('lib');
-  const maps = (await DB.all('maps')).sort((a, b) => b.created - a.created);
+  const base = await ensureBaseMap();
+  const maps = (await DB.all('maps')).filter(m => m.id !== BASE_ID).sort((a, b) => b.created - a.created);
   const el = $('#maps');
-  if (!maps.length) {
-    el.innerHTML = `<div class="empty" style="grid-column:1/-1"><h2>Aún no hay mapas</h2>
-      <p>Importa un <b>GeoPDF</b> (PDF georreferenciado, por ejemplo exportado desde QGIS o ArcGIS) y la app ubicará tu posición GPS sobre él sin internet.</p>
-      <p>También puedes importar un PDF normal o una foto de un plano y georreferenciarlo con 2 o más puntos de coordenadas conocidas.</p></div>`;
-    return;
-  }
   const counts = {};
   (await DB.all('features')).forEach(f => { counts[f.mapId] = (counts[f.mapId] || 0) + 1; });
   el.innerHTML = '';
+  const bb = document.createElement('button');
+  bb.className = 'mapcard';
+  bb.innerHTML = `<span class="basethumb">${ic('globe')}</span>
+    <div><b>${esc(base.name)}</b><small>Imagen satelital de todo el mundo · ${counts[BASE_ID] || 0} elementos</small>
+    <span class="tag ok">Necesita internet la primera vez</span></div>`;
+  bb.onclick = () => openMap(BASE_ID);
+  el.appendChild(bb);
+  if (!maps.length) {
+    el.insertAdjacentHTML('beforeend', `<div class="empty" style="grid-column:1/-1;margin-top:16px"><h2>Aún no hay mapas importados</h2>
+      <p>Importa un <b>GeoPDF</b> (PDF georreferenciado, por ejemplo exportado desde QGIS o ArcGIS): se coloca sobre la imagen satelital y la app ubica tu posición GPS sobre él, también sin internet.</p>
+      <p>También puedes importar un PDF normal o una foto de un plano y georreferenciarlo con 2 o más puntos de coordenadas conocidas.</p></div>`);
+    return;
+  }
   for (const m of maps) {
     const thumb = m.thumbId ? await DB.get('blobs', m.thumbId) : null;
     const b = document.createElement('button');
@@ -257,34 +265,119 @@ const COLORS = ['#e4572e', '#f2a541', '#2e9e5b', '#1d70b8', '#7b2cbf', '#d81b60'
 const DEF_COLOR = { point: '#e4572e', line: '#1d70b8', track: '#f2a541', polygon: '#2e9e5b' };
 const TYPE_NAME = { point: 'Punto', line: 'Línea', track: 'Track', polygon: 'Área' };
 
+// Dos vistas: 'geo' (mapa mundial con capa base satelital; el PDF georreferenciado va encima)
+// y 'px' (la imagen sola en píxeles: mapas sin georreferencia y modo georreferenciar).
 const toLL = ([x, y]) => L.latLng(-y, x);
 const fromLL = ll => [ll.lng, -ll.lat];
 const g = () => cur && cur.map.georef;
-const geoLL = (lat, lon) => toLL(Geo.geoToPx(g(), lat, lon));
-const llGeo = ll => Geo.pxToGeo(g(), ...fromLL(ll));
+const geoOn = () => !!(cur && cur.view === 'geo');
+const geoLL = (lat, lon) => L.latLng(lat, lon);
+const llGeo = ll => [ll.lat, ll.lng];
+const BASE_ID = 'base';
 
-async function openMap(id) {
+// ---------- Capas base (con internet; lo que ya viste queda guardado para usar sin conexión) ----------
+const ESRI = 'https://server.arcgisonline.com/ArcGIS/rest/services/';
+const ATT_ESRI = 'Imágenes © Esri, Maxar, Earthstar Geographics y comunidad SIG';
+const BASES = {
+  sat: { name: 'Satélite', layers: [[ESRI + 'World_Imagery/MapServer/tile/{z}/{y}/{x}', 19, ATT_ESRI]] },
+  satlbl: { name: 'Satélite + nombres', layers: [[ESRI + 'World_Imagery/MapServer/tile/{z}/{y}/{x}', 19, ATT_ESRI], [ESRI + 'Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}', 19, '']] },
+  topo: { name: 'Topográfico', layers: [[ESRI + 'World_Topo_Map/MapServer/tile/{z}/{y}/{x}', 19, 'Mapa © Esri y colaboradores']] },
+  osm: { name: 'Calles', layers: [['https://tile.openstreetmap.org/{z}/{x}/{y}.png', 19, '© colaboradores de OpenStreetMap']] },
+  none: { name: 'Ninguno', layers: [] },
+};
+let baseGroup = null;
+function setBase(key) {
+  if (!BASES[key]) key = 'sat';
+  settings.base = key;
+  if (!lmapGeo) return;
+  if (baseGroup) baseGroup.remove();
+  baseGroup = L.layerGroup(BASES[key].layers.map(([url, nz, att]) => L.tileLayer(url, {
+    maxNativeZoom: nz, maxZoom: 22, attribution: att, crossOrigin: true, keepBuffer: 3, detectRetina: false,
+  }))).addTo(lmapGeo);
+  baseGroup.eachLayer(l => l.bringToBack());
+}
+
+// Imagen del mapa importado colocada sobre el mapa mundial con su georreferencia (transformación afín por CSS).
+const GeoImage = L.Layer.extend({
+  initialize(url, map, georef) {
+    this._url = url; this._m = map; this._g = georef;
+    const c = (x, y) => L.latLng(...Geo.pxToGeo(georef, x, y));
+    this._corners = [c(0, 0), c(map.w, 0), c(0, map.h), c(map.w, map.h)];
+  },
+  onAdd(map) {
+    const img = this._img = L.DomUtil.create('img', 'geoimg');
+    img.src = this._url; img.alt = '';
+    img.style.width = this._m.w + 'px'; img.style.height = this._m.h + 'px';
+    if (map._zoomAnimated) L.DomUtil.addClass(img, 'leaflet-zoom-animated');
+    this.setOpacity(settings.opacity);
+    map.getPanes().overlayPane.appendChild(img);
+    this._update();
+  },
+  onRemove() { L.DomUtil.remove(this._img); },
+  getEvents() { return { zoom: this._update, viewreset: this._update, zoomanim: this._anim }; },
+  getBounds() { return L.latLngBounds(this._corners); },
+  setOpacity(o) { if (this._img) this._img.style.opacity = o; },
+  _apply(P) {
+    const w = this._m.w, h = this._m.h;
+    const a = (P[1].x - P[0].x) / w, b = (P[1].y - P[0].y) / w, c = (P[2].x - P[0].x) / h, d = (P[2].y - P[0].y) / h;
+    this._img.style.transform = `matrix(${a},${b},${c},${d},${P[0].x},${P[0].y})`;
+  },
+  _update() { this._apply(this._corners.slice(0, 3).map(ll => this._map.latLngToLayerPoint(ll))); },
+  _anim(e) { this._apply(this._corners.slice(0, 3).map(ll => this._map._latLngToNewLayerPoint(ll, e.zoom, e.center))); },
+});
+
+let lmapPx = null, lmapGeo = null;
+function useMap(view) {
+  $('#leaf').hidden = view !== 'px';
+  $('#leafGeo').hidden = view !== 'geo';
+  const make = (el, opts) => {
+    const m = L.map(el, Object.assign({ zoomControl: false, boxZoom: false, wheelPxPerZoomLevel: 90 }, opts));
+    m.on('dragstart', () => { if (follow) setFollow(false); });
+    m.on('click', onMapClick);
+    m.on('move', onMapMove);
+    return m;
+  };
+  if (view === 'px' && !lmapPx) lmapPx = make('leaf', { crs: L.CRS.Simple, minZoom: -6, maxZoom: 4, zoomSnap: 0.25, zoomDelta: 0.5, attributionControl: false });
+  if (view === 'geo' && !lmapGeo) {
+    lmapGeo = make('leafGeo', { minZoom: 3, maxZoom: 22, zoomSnap: 0.5, zoomDelta: 0.5, worldCopyJump: true });
+    lmapGeo.attributionControl.setPrefix(false);
+    setBase(settings.base);
+  }
+  lmap = view === 'px' ? lmapPx : lmapGeo;
+  lmap.invalidateSize();
+}
+
+async function ensureBaseMap() {
+  let m = await DB.get('maps', BASE_ID);
+  if (!m) { m = { id: BASE_ID, name: 'Mapa satelital', kind: 'base', created: 0, georef: null }; await DB.put('maps', m); }
+  return m;
+}
+
+async function openMap(id, forcePx) {
   const m = await DB.get('maps', id);
   if (!m) return showLibrary();
-  const img = await DB.get('blobs', m.imageId);
-  cur = { map: m, feats: new Map(), layers: new Map() };
+  const view = m.kind !== 'base' && (forcePx || !m.georef) ? 'px' : 'geo';
+  cur = { map: m, feats: new Map(), layers: new Map(), view };
   show('view');
   $('#mapName').textContent = m.name;
-  if (!lmap) {
-    lmap = L.map('leaf', { crs: L.CRS.Simple, minZoom: -6, maxZoom: 4, zoomSnap: 0.25, zoomDelta: 0.5, zoomControl: false, attributionControl: false, boxZoom: false, wheelPxPerZoomLevel: 90 });
-    lmap.on('dragstart', () => { if (follow) setFollow(false); });
-    lmap.on('click', onMapClick);
-    lmap.on('move', onMapMove);
+  [overlay, fLayer, tmpLayer, gcpLayer, gpsDot, gpsAcc].forEach(l => l && l.remove());
+  overlay = gpsDot = gpsAcc = null;
+  useMap(view);
+  if (view === 'px') {
+    const img = await DB.get('blobs', m.imageId);
+    const bounds = L.latLngBounds([[-m.h, 0], [0, m.w]]);
+    overlay = L.imageOverlay(blobUrl(img.blob), bounds).addTo(lmap);
+    lmap.setMaxBounds(bounds.pad(0.6));
+    lmap.fitBounds(bounds, { animate: false });
+    lmap.setMinZoom(lmap.getZoom() - 1.5);
+  } else if (m.kind === 'base') {
+    if (gps) lmap.setView([gps.lat, gps.lon], 17, { animate: false });
+    else if (!cur.keepView) lmap.setView([15.6, -90.3], 7, { animate: false });
+  } else {
+    const img = await DB.get('blobs', m.imageId);
+    overlay = new GeoImage(blobUrl(img.blob), m, m.georef).addTo(lmap);
+    lmap.fitBounds(overlay.getBounds(), { animate: false });
   }
-  lmap.invalidateSize();
-  if (overlay) overlay.remove();
-  [fLayer, tmpLayer, gcpLayer].forEach(l => l && l.remove());
-  gpsDot = gpsAcc = null;
-  const bounds = L.latLngBounds([[-m.h, 0], [0, m.w]]);
-  overlay = L.imageOverlay(blobUrl(img.blob), bounds).addTo(lmap);
-  lmap.setMaxBounds(bounds.pad(0.6));
-  lmap.fitBounds(bounds, { animate: false });
-  lmap.setMinZoom(lmap.getZoom() - 1.5);
   fLayer = L.layerGroup().addTo(lmap);
   tmpLayer = L.layerGroup().addTo(lmap);
   gcpLayer = L.layerGroup().addTo(lmap);
@@ -292,11 +385,19 @@ async function openMap(id) {
   renderFeatures();
   setMode(null);
   startGps();
+  updateGps();
+}
+function fitMap() {
+  setFollow(false);
+  if (cur.view === 'px') lmap.fitBounds(L.latLngBounds([[-cur.map.h, 0], [0, cur.map.w]]));
+  else if (overlay) lmap.fitBounds(overlay.getBounds());
+  else if (cur.feats.size) lmap.fitBounds(L.latLngBounds([...cur.feats.values()].flatMap(f => f.coords.map(c => [c[0], c[1]]))), { padding: [60, 60], maxZoom: 18 });
+  else locate();
 }
 
 function updateBanner() {
   const b = $('#banner');
-  if (cur && !g() && mode !== 'georef') {
+  if (cur && cur.view === 'px' && !g() && mode !== 'georef') {
     b.innerHTML = `${ic('info')}<span>Este mapa no está georreferenciado: sin él no se puede mostrar el GPS ni medir.</span><button class="btn pri" id="bGeo">Georreferenciar</button>`;
     b.classList.add('on');
     $('#bGeo').onclick = startGeoref;
@@ -306,13 +407,13 @@ function updateBanner() {
 // ---------- Elementos ----------
 function renderFeatures() {
   fLayer.clearLayers(); cur.layers.clear();
-  if (!g()) return;
+  if (!geoOn()) return;
   for (const f of cur.feats.values()) drawFeature(f);
 }
 function drawFeature(f) {
   const old = cur.layers.get(f.id);
   if (old) fLayer.removeLayer(old);
-  if (!g() || !f.coords.length) return;
+  if (!geoOn() || !f.coords.length) return;
   const pts = f.coords.map(c => geoLL(c[0], c[1]));
   let lyr;
   if (f.type === 'point') lyr = L.circleMarker(pts[0], { radius: 9, color: '#fff', weight: 2.5, fillColor: f.color, fillOpacity: 1 });
@@ -344,8 +445,8 @@ function newFeature(type, coords) {
 }
 function zoomTo(f) {
   const pts = f.coords.map(c => geoLL(c[0], c[1]));
-  if (pts.length === 1) lmap.setView(pts[0], Math.max(lmap.getZoom(), 1));
-  else lmap.fitBounds(L.latLngBounds(pts), { padding: [60, 60], maxZoom: 2 });
+  if (pts.length === 1) lmap.setView(pts[0], Math.max(lmap.getZoom(), 18));
+  else lmap.fitBounds(L.latLngBounds(pts), { padding: [60, 60], maxZoom: 19 });
 }
 function summary(f) {
   const m = Geo.measures(f);
@@ -475,7 +576,9 @@ function updateGps() {
     const W = cur.map.w, H = cur.map.h;
     const dx = Math.max(0, -x, x - W), dy = Math.max(0, -y, y - H);
     if (dx || dy) { info += ` · Fuera del mapa (${Geo.formatLength(Math.hypot(dx, dy) * g().mpp)})`; infoEl.classList.add('w'); }
-    const ll = toLL([x, y]), r = gps.acc / g().mpp;
+  }
+  if (geoOn()) {
+    const ll = L.latLng(gps.lat, gps.lon), r = gps.acc;
     if (!gpsDot) {
       gpsAcc = L.circle(ll, { radius: r, color: '#1a73e8', weight: 1, fillColor: '#1a73e8', fillOpacity: 0.12, interactive: false }).addTo(lmap);
       gpsDot = L.circleMarker(ll, { radius: 8, color: '#fff', weight: 3, fillColor: '#1a73e8', fillOpacity: 1, interactive: false }).addTo(lmap);
@@ -491,17 +594,16 @@ function setFollow(on) {
   const b = $('#bLoc'); if (b) b.classList.toggle('on', on);
 }
 function locate() {
-  if (!g()) return toast('Primero georreferencia el mapa');
+  if (!geoOn()) return toast('Primero georreferencia el mapa');
   if (!gps) return toast('Todavía no hay señal GPS');
-  const [x, y] = Geo.geoToPx(g(), gps.lat, gps.lon);
-  lmap.setView(toLL([x, y]), Math.max(lmap.getZoom(), 0.5));
+  lmap.setView([gps.lat, gps.lon], Math.max(lmap.getZoom(), 17));
   setFollow(true);
 }
 
 // ---------- Modos y barra inferior ----------
 function setMode(m) {
   mode = m;
-  $('#cross').classList.toggle('on', !!g() || m === 'georef');
+  $('#cross').classList.toggle('on', geoOn() || m === 'georef');
   updateBanner();
   refreshPanel(true);
 }
@@ -512,7 +614,7 @@ function refreshPanel(rebuild) {
   if (mode === 'track') return trackPanel(bot, rebuild);
   if (mode === 'georef') return georefPanel(bot, rebuild);
   if (!rebuild) return;
-  const geo = !!g();
+  const geo = geoOn();
   bot.innerHTML = `<div class="tools">
     <button id="bLoc" ${geo ? '' : 'disabled'}>${ic('locate')}Ubicarme</button>
     <button id="bPt" ${geo ? '' : 'disabled'}>${ic('point')}Punto</button>
@@ -679,11 +781,13 @@ async function stopTrack() {
 }
 
 // ---------- Georreferenciación manual ----------
-function startGeoref() {
+async function startGeoref() {
   const m = cur.map;
+  if (m.kind === 'base') return toast('El mapa satelital ya tiene coordenadas');
   if (m.georef && m.georef.source === 'geopdf' && !confirm('Este mapa ya trae georreferencia del GeoPDF. ¿Reemplazarla por puntos manuales?')) return;
   closeSheet();
   setFollow(false);
+  if (cur.view !== 'px') await openMap(m.id, true);
   gref = { pts: m.georef && m.georef.source === 'manual' ? m.georef.points.map(p => ({ ...p })) : [] };
   setMode('georef');
   renderGcps();
@@ -714,13 +818,15 @@ function georefPanel(bot) {
       <button class="btn pri" id="gOk" ${fit ? '' : 'disabled'}>${ic('check')}Guardar</button></div></div>`;
   bot.querySelectorAll('[data-i]').forEach(b => b.onclick = () => { gref.pts.splice(+b.dataset.i, 1); renderGcps(); });
   $('#gAdd').onclick = () => addGcp(fromLL(lmap.getCenter()));
-  $('#gCancel').onclick = () => { gref = null; gcpLayer.clearLayers(); setMode(null); };
+  $('#gCancel').onclick = () => {
+    gref = null; gcpLayer.clearLayers();
+    if (g()) openMap(cur.map.id); else setMode(null);
+  };
   $('#gOk').onclick = async () => {
     cur.map.georef = gref.fit;
     await DB.put('maps', cur.map);
-    gref = null; gcpLayer.clearLayers();
-    gpsDot && gpsDot.remove(); gpsAcc && gpsAcc.remove(); gpsDot = gpsAcc = null;
-    renderFeatures(); setMode(null); updateGps();
+    gref = null;
+    await openMap(cur.map.id);
     toast('Georreferencia guardada');
   };
 }
@@ -776,7 +882,7 @@ function listSheet() {
   const s = openSheet(`<h2>Elementos de este mapa (${feats.length})</h2>
     ${feats.length ? `<button class="btn pri" id="lExp" style="width:100%;margin-bottom:8px">${ic('share')}Exportar KML, GPX o CSV</button>` : '<p class="note">Todavía no hay puntos, tracks ni áreas.</p>'}
     <div class="list">${feats.map(f => `<button data-id="${f.id}"><span class="sw" style="background:${f.color}"></span><span><b>${esc(f.name)}</b><small>${TYPE_NAME[f.type]} · ${esc(summary(f))}${f.photos && f.photos.length ? ` · ${f.photos.length} foto${f.photos.length > 1 ? 's' : ''}` : ''}</small></span></button>`).join('')}</div>`);
-  s.querySelectorAll('.list button').forEach(b => b.onclick = () => { const f = cur.feats.get(b.dataset.id); closeSheet(); if (g()) zoomTo(f); openEditor(f.id); });
+  s.querySelectorAll('.list button').forEach(b => b.onclick = () => { const f = cur.feats.get(b.dataset.id); closeSheet(); if (geoOn()) zoomTo(f); openEditor(f.id); });
   const e = s.querySelector('#lExp'); if (e) e.onclick = exportSheet;
 }
 function exportSheet() {
@@ -810,26 +916,39 @@ function exportSheet() {
   };
 }
 function menuSheet() {
-  const m = cur.map, gr = m.georef;
-  const s = openSheet(`<h2>${esc(m.name)}</h2><div class="menu">
+  const m = cur.map, gr = m.georef, isBase = m.kind === 'base';
+  const s = openSheet(`<h2>${esc(m.name)}</h2>
+    ${geoOn() ? `<h3>Mapa base</h3>
+    <div class="seg" id="mBase">${Object.entries(BASES).map(([k, b]) => `<button data-b="${k}" aria-pressed="${settings.base === k}">${b.name}</button>`).join('')}</div>
+    <p class="note" style="margin-top:-6px">Necesita internet. Las zonas que ya viste quedan guardadas y se ven sin conexión.</p>` : ''}
+    ${geoOn() && overlay ? `<label>Transparencia del mapa importado <span id="mOpV">${Math.round(settings.opacity * 100)} %</span>
+      <input type="range" id="mOp" min="0" max="1" step="0.05" value="${settings.opacity}"></label>` : ''}
+    <div class="menu">
     <button id="mList">${ic('list')}Elementos (${cur.feats.size})</button>
     <button id="mExp" ${cur.feats.size ? '' : 'disabled'}>${ic('share')}Exportar KML / GPX / CSV</button>
-    <button id="mFit">${ic('fit')}Ver mapa completo</button>
-    <button id="mGeo">${ic('pin')}${gr ? 'Rehacer georreferencia' : 'Georreferenciar'}</button>
+    <button id="mFit">${ic('fit')}${isBase ? 'Ver todos mis elementos' : 'Ver mapa completo'}</button>
+    ${isBase ? '' : `<button id="mGeo">${ic('pin')}${gr ? 'Rehacer georreferencia' : 'Georreferenciar'}</button>`}
     <button id="mLbl">${ic('tag')}${settings.labels ? 'Ocultar' : 'Mostrar'} nombres en el mapa</button>
-    <button id="mRen">${ic('edit')}Cambiar nombre del mapa</button></div>
+    ${isBase ? '' : `<button id="mRen">${ic('edit')}Cambiar nombre del mapa</button>`}</div>
     <h3>Formato de coordenadas</h3>
     <div class="seg" id="mFmt">${[['dd', 'Lat/Lon'], ['dms', 'GMS'], ['utm', 'UTM'], ['gtm', 'GTM']].map(([k, t]) => `<button data-f="${k}" aria-pressed="${settings.fmt === k}">${t}</button>`).join('')}</div>
-    <h3>Información</h3><dl class="kv">
+    ${isBase ? '' : `<h3>Información</h3><dl class="kv">
       <dt>Origen</dt><dd>${m.kind === 'pdf' ? `PDF, página ${m.page || 1}` : 'Imagen'} · ${m.w}×${m.h} px</dd>
       <dt>Georreferencia</dt><dd>${gr ? (gr.source === 'geopdf' ? 'Leída del GeoPDF' : `Manual, ${gr.points.length} puntos`) : 'No'}</dd>
-      ${gr ? `<dt>Resolución</dt><dd>${gr.mpp.toFixed(2)} m por píxel</dd>${gr.rms ? `<dt>Error medio</dt><dd>${gr.rms.toFixed(1)} m</dd>` : ''}` : ''}</dl>`);
+      ${gr ? `<dt>Resolución</dt><dd>${gr.mpp.toFixed(2)} m por píxel</dd>${gr.rms ? `<dt>Error medio</dt><dd>${gr.rms.toFixed(1)} m</dd>` : ''}` : ''}</dl>`}`);
+  s.querySelectorAll('#mBase button').forEach(b => b.onclick = () => {
+    setBase(b.dataset.b); s.querySelectorAll('#mBase button').forEach(x => x.setAttribute('aria-pressed', x === b));
+  });
+  const op = s.querySelector('#mOp');
+  if (op) op.oninput = () => { settings.opacity = +op.value; overlay.setOpacity(+op.value); s.querySelector('#mOpV').textContent = Math.round(op.value * 100) + ' %'; };
   s.querySelector('#mList').onclick = listSheet;
   s.querySelector('#mExp').onclick = exportSheet;
-  s.querySelector('#mFit').onclick = () => { closeSheet(); setFollow(false); lmap.fitBounds(L.latLngBounds([[-m.h, 0], [0, m.w]])); };
-  s.querySelector('#mGeo').onclick = () => { if (mode) return toast('Termina primero lo que estás haciendo'); startGeoref(); };
+  s.querySelector('#mFit').onclick = () => { closeSheet(); fitMap(); };
+  const mg = s.querySelector('#mGeo');
+  if (mg) mg.onclick = () => { if (mode) return toast('Termina primero lo que estás haciendo'); startGeoref(); };
   s.querySelector('#mLbl').onclick = () => { settings.labels = !settings.labels; closeSheet(); renderFeatures(); };
-  s.querySelector('#mRen').onclick = () => mapOptions(m);
+  const mr = s.querySelector('#mRen');
+  if (mr) mr.onclick = () => mapOptions(m);
   s.querySelectorAll('#mFmt button').forEach(b => b.onclick = () => {
     settings.fmt = b.dataset.f; s.querySelectorAll('#mFmt button').forEach(x => x.setAttribute('aria-pressed', x === b)); updateGps();
   });
