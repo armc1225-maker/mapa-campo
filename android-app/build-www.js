@@ -4,7 +4,7 @@ const fs = require('fs'), path = require('path');
 const src = path.resolve(__dirname, '..'), out = path.join(__dirname, 'www'), lib = path.join(out, 'lib');
 fs.rmSync(out, { recursive: true, force: true });
 fs.mkdirSync(lib, { recursive: true });
-for (const f of ['index.html', 'app.js', 'geo.js', 'icon.svg', 'manifest.webmanifest']) fs.copyFileSync(path.join(src, f), path.join(out, f));
+for (const f of ['index.html', 'app.js', 'geo.js', 'formats.js', 'icon.svg', 'manifest.webmanifest']) fs.copyFileSync(path.join(src, f), path.join(out, f));
 const nm = path.join(__dirname, 'node_modules');
 fs.copyFileSync(path.join(nm, 'leaflet/dist/leaflet.css'), path.join(lib, 'leaflet.css'));
 fs.copyFileSync(path.join(nm, 'leaflet/dist/leaflet.js'), path.join(lib, 'leaflet.js'));

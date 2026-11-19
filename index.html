@@ -161,8 +161,8 @@ textarea{min-height:70px;resize:vertical}
     <div><h1>Mapa de Campo</h1><p>Mapas georreferenciados sin internet</p></div>
   </header>
   <main><div id="maps" class="maps"></div></main>
-  <button class="fab" id="btnImport"><svg class="i" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>Importar mapa (PDF o imagen)</button>
-  <input type="file" id="fileMap" accept="application/pdf,.pdf,image/*" hidden>
+  <button class="fab" id="btnImport"><svg class="i" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>Importar mapa o capa</button>
+  <input type="file" id="fileMap" accept="application/pdf,.pdf,image/*,.kml,.kmz,.gpx,.geojson,.json,.zip,.shp,.dbf,.prj,.cpg,.shx,.csv,.txt" multiple hidden>
 </section>
 
 <section id="view" class="screen" aria-label="Mapa">
@@ -180,6 +180,7 @@ textarea{min-height:70px;resize:vertical}
   </div>
   <div class="banner" id="banner"></div>
   <div class="bottom" id="bottom"></div>
+  <input type="file" id="fileLayer" accept=".kml,.kmz,.gpx,.geojson,.json,.zip,.shp,.dbf,.prj,.cpg,.shx,.csv,.txt" multiple hidden>
 </section>
 
 <div id="toast" role="status"></div>
@@ -188,6 +189,7 @@ textarea{min-height:70px;resize:vertical}
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script src="geo.js"></script>
+<script src="formats.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

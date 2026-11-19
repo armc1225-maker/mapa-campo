@@ -77,6 +77,7 @@ const DB = (() => {
     put: (st, v) => tx(st, 'readwrite', s => s.put(v)),
     del: (st, id) => tx(st, 'readwrite', s => s.delete(id)),
     all: st => tx(st, 'readonly', s => s.getAll()),
+    putMany: (st, list) => tx(st, 'readwrite', s => { list.forEach(v => s.put(v)); return null; }),
     byMap: id => tx('features', 'readonly', s => s.index('mapId').getAll(id)),
   };
 })();
@@ -187,11 +188,96 @@ function mapOptions(m) {
 
 $('#btnImport').onclick = () => $('#fileMap').click();
 $('#fileMap').onchange = async e => {
-  const f = e.target.files[0]; e.target.value = '';
-  if (!f) return;
-  try { const id = await importMap(f); await openMap(id); }
-  catch (err) { console.error(err); busy(); toast('No se pudo importar: ' + (err.message || err), 5000); }
+  const files = [...e.target.files]; e.target.value = '';
+  if (!files.length) return;
+  try {
+    if (files.some(Formats.isVector)) return await importVector(files, null);
+    const id = await importMap(files[0]); await openMap(id);
+  } catch (err) { console.error(err); busy(); toast('No se pudo importar: ' + (err.message || err), 5000); }
 };
+
+// ---------- Importar capas: KML, KMZ, GPX, GeoJSON, Shapefile, CSV ----------
+function askCrs(reason) {
+  return new Promise(res => {
+    const P = Formats.CRS_PRESETS;
+    const s = openSheet(`<h2>¿En qué sistema están las coordenadas?</h2><p class="note">${esc(reason)}</p>
+      <div class="menu">${Object.entries(P).map(([k, c]) => `<button data-k="${k}">${ic('globe')}${esc(c.label)}</button>`).join('')}</div>
+      <p class="note">En Guatemala, los planos del RIC e INAB suelen estar en GTM.</p>`, () => res(null));
+    s.querySelectorAll('[data-k]').forEach(b => b.onclick = () => { sheetClose = null; closeSheet(); res(b.dataset.k); });
+  });
+}
+function chooseTarget(maps) {
+  return new Promise(res => {
+    const s = openSheet(`<h2>¿A qué mapa agrego los elementos?</h2><div class="menu">${maps.map(m => `<button data-id="${m.id}">${ic(m.kind === 'base' ? 'globe' : 'pin')}${esc(m.name)}</button>`).join('')}</div>`, () => res(null));
+    s.querySelectorAll('[data-id]').forEach(b => b.onclick = () => { sheetClose = null; closeSheet(); res(b.dataset.id); });
+  });
+}
+function confirmImport(r, targetName) {
+  return new Promise(res => {
+    const c = { point: 0, line: 0, track: 0, polygon: 0 };
+    r.features.forEach(f => c[f.type]++);
+    const parts = [[c.point, 'punto', 'puntos'], [c.line, 'línea', 'líneas'], [c.track, 'track', 'tracks'], [c.polygon, 'área', 'áreas']]
+      .filter(x => x[0]).map(([n, a, b]) => `<b>${n}</b> ${n === 1 ? a : b}`).join(', ');
+    const s = openSheet(`<h2>Importar</h2>
+      ${r.features.length ? `<p>Se encontraron ${parts}${targetName ? `. Se agregarán a <b>${esc(targetName)}</b>.` : '.'}</p>` : ''}
+      ${r.overlays.length ? `<p>Además, ${r.overlays.length === 1 ? 'una imagen georreferenciada se creará' : `${r.overlays.length} imágenes georreferenciadas se crearán`} como mapa nuevo: ${r.overlays.map(o => esc(o.name)).join(', ')}.</p>` : ''}
+      ${r.warnings.length ? `<div class="note" style="color:var(--warn)">${r.warnings.map(esc).join('<br>')}</div>` : ''}
+      <div class="row"><button class="btn ghost" id="iNo">Cancelar</button><button class="btn pri" id="iOk">${ic('check')}Importar</button></div>`, () => res(false));
+    s.querySelector('#iNo').onclick = () => closeSheet();
+    s.querySelector('#iOk').onclick = () => { sheetClose = null; closeSheet(); res(true); };
+  });
+}
+async function overlayMap(o) {
+  const bmp = await createImageBitmap(o.blob);
+  let w = bmp.width, h = bmp.height, blob = o.blob;
+  if (w * h > 16e6) {
+    const k = Math.sqrt(16e6 / (w * h)), c = document.createElement('canvas');
+    c.width = Math.floor(w * k); c.height = Math.floor(h * k);
+    c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
+    blob = await canvasBlob(c, 0.9); w = c.width; h = c.height;
+  }
+  bmp.close && bmp.close();
+  const [ul, ur, lr, ll] = o.corners;
+  const georef = Geo.fitGeoref([{ x: 0, y: 0, lat: ul[0], lon: ul[1] }, { x: w, y: 0, lat: ur[0], lon: ur[1] }, { x: w, y: h, lat: lr[0], lon: lr[1] }, { x: 0, y: h, lat: ll[0], lon: ll[1] }], 'kmz');
+  const rec = { id: uid(), name: o.name.replace(/\.[^.]+$/, ''), created: Date.now(), kind: 'image', georef, w, h, imageId: uid(), thumbId: uid() };
+  await DB.put('blobs', { id: rec.imageId, blob });
+  await DB.put('blobs', { id: rec.thumbId, blob: await shrink(blob, 240) });
+  await DB.put('maps', rec);
+  return rec.id;
+}
+async function importVector(files, targetId) {
+  busy('Leyendo archivos…');
+  let r;
+  try { r = await Formats.readFiles(files, async msg => { busy(); const c = await askCrs(msg); busy('Leyendo archivos…'); return c; }); }
+  finally { busy(); }
+  if (!r.features.length && !r.overlays.length) {
+    return toast(r.warnings.length ? r.warnings[0] : 'El archivo no tiene puntos, líneas ni áreas.', 6000);
+  }
+  if (r.features.length && !targetId) {
+    const maps = (await DB.all('maps')).filter(m => m.kind === 'base' || m.georef).sort((a, b) => (b.kind === 'base') - (a.kind === 'base') || b.created - a.created);
+    targetId = maps.length > 1 ? await chooseTarget(maps) : BASE_ID;
+    if (!targetId) return;
+  }
+  const target = targetId ? await DB.get('maps', targetId) : null;
+  if (!await confirmImport(r, target && target.name)) return;
+  busy('Guardando…');
+  try {
+    let firstOverlay = null;
+    for (const o of r.overlays) { const id = await overlayMap(o); firstOverlay = firstOverlay || id; }
+    const now = Date.now();
+    const feats = r.features.map((f, i) => ({
+      id: uid(), mapId: targetId, type: f.type, name: f.name || TYPE_NAME[f.type], note: f.note || '',
+      color: f.color || DEF_COLOR[f.type], coords: f.coords, photos: [], created: now + i, imported: f.layer,
+    }));
+    if (feats.length) await DB.putMany('features', feats);
+    busy();
+    toast(`Importado: ${feats.length} elementos${r.overlays.length ? ` y ${r.overlays.length} mapa(s)` : ''}`, 3500);
+    const open = feats.length ? targetId : firstOverlay;
+    if (!cur || cur.map.id !== open) await openMap(open);
+    else { feats.forEach(f => cur.feats.set(f.id, f)); renderFeatures(); }
+    if (feats.length && geoOn()) lmap.fitBounds(L.latLngBounds(feats.flatMap(f => f.coords.map(c => [c[0], c[1]]))), { padding: [50, 50], maxZoom: 18 });
+  } catch (err) { busy(); throw err; }
+}
 
 function choosePage(n) {
   return new Promise(res => {
@@ -937,6 +1023,7 @@ function menuSheet() {
       <input type="range" id="mOp" min="0" max="1" step="0.05" value="${settings.opacity}"></label>` : ''}
     <div class="menu">
     <button id="mList">${ic('list')}Elementos (${cur.feats.size})</button>
+    <button id="mImp" ${geoOn() ? '' : 'disabled'}>${ic('plus')}Importar KML, KMZ, GPX, SHP, GeoJSON o CSV</button>
     <button id="mExp" ${cur.feats.size ? '' : 'disabled'}>${ic('share')}Exportar KML / GPX / CSV</button>
     <button id="mFit">${ic('fit')}${isBase ? 'Ver todos mis elementos' : 'Ver mapa completo'}</button>
     ${isBase ? '' : `<button id="mGeo">${ic('pin')}${gr ? 'Rehacer georreferencia' : 'Georreferenciar'}</button>`}
@@ -955,6 +1042,7 @@ function menuSheet() {
   if (op) op.oninput = () => { settings.opacity = +op.value; overlay.setOpacity(+op.value); s.querySelector('#mOpV').textContent = Math.round(op.value * 100) + ' %'; };
   s.querySelector('#mList').onclick = listSheet;
   s.querySelector('#mExp').onclick = exportSheet;
+  s.querySelector('#mImp').onclick = () => { closeSheet(); $('#fileLayer').click(); };
   s.querySelector('#mFit').onclick = () => { closeSheet(); fitMap(); };
   const mg = s.querySelector('#mGeo');
   if (mg) mg.onclick = () => { if (mode) return toast('Termina primero lo que estás haciendo'); startGeoref(); };
@@ -966,6 +1054,12 @@ function menuSheet() {
   });
 }
 $('#btnMenu').onclick = menuSheet;
+$('#fileLayer').onchange = async e => {
+  const files = [...e.target.files]; e.target.value = '';
+  if (!files.length || !cur) return;
+  try { await importVector(files, cur.map.id); }
+  catch (err) { console.error(err); busy(); toast('No se pudo importar: ' + (err.message || err), 6000); }
+};
 $('#btnBack').onclick = async () => {
   if (track) { if (!confirm('Se está grabando un track. ¿Detenerlo y salir?')) return; await stopTrack(); closeSheet(); }
   if (draw) endDraw();

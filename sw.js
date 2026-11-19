@@ -1,9 +1,9 @@
 // Mapa de Campo — funciona sin internet: guarda la app, sus librerías y las teselas del mapa base que ya se vieron.
-const CACHE = 'mapa-campo-v2';
+const CACHE = 'mapa-campo-v3';
 const TILES = 'mapa-campo-teselas';
 const MAX_TILES = 8000; // ~ 150-250 MB según la zona
 const SHELL = [
-  './', 'index.html', 'app.js', 'geo.js', 'manifest.webmanifest', 'icon.svg',
+  './', 'index.html', 'app.js', 'geo.js', 'formats.js', 'manifest.webmanifest', 'icon.svg',
   'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css',
   'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js',
   'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js',
