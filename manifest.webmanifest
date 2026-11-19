@@ -1,0 +1,19 @@
+{
+  "name": "Mapa de Campo",
+  "short_name": "Mapa Campo",
+  "description": "Mapas PDF georreferenciados sin internet: GPS, puntos con fotos, tracks, áreas y exportación KML, GPX y CSV.",
+  "lang": "es",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#f2efe7",
+  "theme_color": "#1f5135",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" }
+  ],
+  "file_handlers": [
+    { "action": "./", "accept": { "application/pdf": [".pdf"] } }
+  ]
+}

@@ -1,0 +1,58 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 8 0 R >> >> /VP [5 0 R] >>
+endobj
+4 0 obj
+<< /Length 703 >>
+stream
+0.2 0.4 0.25 RG 2 w 36 36 540 720 re S
+0.5 w 0.6 0.6 0.6 RG
+90 36 m 90 756 l S 36 108 m 576 108 l S
+144 36 m 144 756 l S 36 180 m 576 180 l S
+198 36 m 198 756 l S 36 252 m 576 252 l S
+252 36 m 252 756 l S 36 324 m 576 324 l S
+306 36 m 306 756 l S 36 396 m 576 396 l S
+360 36 m 360 756 l S 36 468 m 576 468 l S
+414 36 m 414 756 l S 36 540 m 576 540 l S
+468 36 m 468 756 l S 36 612 m 576 612 l S
+522 36 m 522 756 l S 36 684 m 576 684 l S
+0.8 0.2 0.1 rg 300 390 12 12 re f
+BT /F1 14 Tf 0 0 0 rg 40 770 Td (GeoPDF de prueba  14.60-14.62 N  90.50-90.52 O) Tj ET
+BT /F1 10 Tf 40 24 Td (SO 14.60,-90.52) Tj ET BT /F1 10 Tf 500 760 Td (NE 14.62,-90.50) Tj ET
+BT /F1 10 Tf 300 400 Td (centro 14.61,-90.51) Tj ET
+endstream
+endobj
+5 0 obj
+<< /Type /Viewport /BBox [36 36 576 756] /Name (Mapa) /Measure 6 0 R >>
+endobj
+6 0 obj
+<< /Type /Measure /Subtype /GEO /Bounds [0 0 0 1 1 1 1 0] /GPTS [14.6 -90.52 14.62 -90.52 14.62 -90.5 14.6 -90.5] /LPTS [0 0 0 1 1 1 1 0] /GCS 7 0 R >>
+endobj
+7 0 obj
+<< /Type /GEOGCS /WKT (GEOGCS["WGS 84"]) >>
+endobj
+8 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+xref
+0 9
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000253 00000 n 
+0000001006 00000 n 
+0000001093 00000 n 
+0000001260 00000 n 
+0000001319 00000 n 
+trailer
+<< /Size 9 /Root 1 0 R >>
+startxref
+1389
+%%EOF
